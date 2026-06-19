@@ -1,0 +1,252 @@
+<?php
+include 'components/connect.php';
+require __DIR__ . '/vendor/autoload.php';
+
+use Smalot\PdfParser\Parser;
+use Mpdf\Mpdf;
+
+/* ================= USER CHECK ================= */
+$user_id = $_COOKIE['user_id'] ?? '';
+if(!$user_id){
+    header('location:login.php');
+    exit();
+}
+
+if(!isset($_GET['file_id'])){
+    header('location:upload.php');
+    exit();
+}
+
+$file_id = $_GET['file_id'];
+
+/* ================= FETCH FILE ================= */
+$stmt = $conn->prepare("SELECT * FROM upload WHERE id = ? AND user_id = ?");
+$stmt->execute([$file_id, $user_id]);
+
+if($stmt->rowCount() == 0){
+    die('<p class="empty">الملف غير موجود!</p>');
+}
+
+$file = $stmt->fetch(PDO::FETCH_ASSOC);
+$file_path = $file['file_path'];
+
+/* ================= READ PDF ================= */
+$pdf_text = '';
+$ai_output = '';
+
+try{
+    $parser = new Parser();
+    $pdf = $parser->parseFile($file_path);
+    $pdf_text = $pdf->getText();
+}catch(Exception $e){
+    $ai_output = "فشل قراءة ملف PDF";
+}
+
+/* ================= CLEAN TEXT ================= */
+$clean_text = preg_replace("/(\r?\n){2,}/", "\n\n", $pdf_text);
+$clean_text = implode("\n", array_map('trim', explode("\n", $clean_text)));
+$pdf_text = substr($clean_text, 0, 5000);
+
+/* ================= DETECT LANGUAGE ================= */
+$englishChars = preg_match_all("/[a-zA-Z]/", $pdf_text);
+$arabicChars = preg_match_all("/[\p{Arabic}]/u", $pdf_text);
+
+$direction = ($englishChars > $arabicChars) ? "ltr" : "rtl";
+$textAlign = ($englishChars > $arabicChars) ? "left" : "right";
+
+/* ================= GEMINI API ================= */
+if(empty($ai_output)){
+
+    $dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
+    $dotenv->load();
+
+    $apiKey = $_ENV['GEMINI_API_KEY'] ?? '';
+
+    if($apiKey == ''){
+        $ai_output = "مفتاح API غير موجود";
+    } else {
+
+        $prompt = "أنت محلل أكاديمي متخصص في تحليل النصوص العلمية.
+أنت خبير أكاديمي وباحث محترف في تحليل النصوص والمقالات العلمية.
+
+مهم جداً:
+- يجب الالتزام بدقة باللغة الأساسية للنص المرسل.
+- إذا كان النص باللغة العربية:
+    - قم بتحليل النص بالكامل باللغة العربية.
+    - لا تستخدم أي جمل باللغة الإنجليزية.
+- إذا كان النص باللغة الإنجليزية:
+    - قم بتحليل النص باللغة الإنجليزية.
+    - بعد كل قسم رئيسي، أضف شرحاً مختصراً باللغة العربية لتوضيح الفكرة.
+    - اللغة الأساسية تبقى الإنجليزية، والعربية فقط للشروحات المختصرة.
+
+الشروط التقنية للإخراج:
+- أعد النتيجة على شكل HTML كامل فقط يبدأ بـ <!DOCTYPE html> وينتهي بـ </html>.
+- استخدم تنسيق احترافي داخل <style> CSS داخلي.
+- لا تكتب أي شرح أو تعليق خارج كود HTML.
+- لا تستخدم Markdown أو رموز خارجية.
+- استخدم تصميم حديث وبطاقات (Cards) واضحة.
+- استخدم ألوان أكاديمية هادئة وخط عربي واضح.
+- قلل الفراغات بحيث لا يزيد عن سطر واحد بين العناصر.
+
+المحتوى المطلوب داخل HTML:
+1) عنوان رئيسي واضح
+2) ملخص أكاديمي احترافي
+3) تحليل مفصل مقسم بعناوين فرعية
+4) استخراج الأفكار الرئيسية في بطاقات منفصلة
+5) مخطط مفاهيمي (Concept Map) منظم بصيغة HTML/CSS
+6) جدول يلخص النقاط المهمة
+7) خاتمة تحليلية قوية
+
+النص للتحليل:
+
+        $pdf_text";
+
+        $data = ["contents" => [["parts" => [["text" => $prompt]]]]];
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=".$apiKey);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ["Content-Type: application/json"]);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+
+        $response = curl_exec($ch);
+
+        if(curl_errno($ch)){
+            $ai_output = "خطأ في الاتصال";
+        } else {
+            $result = json_decode($response, true);
+            $ai_output = $result['candidates'][0]['content']['parts'][0]['text'] ?? "فشل التلخيص";
+
+            // 🔥 إزالة DOCTYPE و HTML و BODY
+            if(preg_match('/<body.*?>(.*)<\/body>/is', $ai_output, $matches)){
+                $ai_output = $matches[1];
+            }
+        }
+
+        curl_close($ch);
+    }
+}
+?>
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>تلخيص الملف</title>
+
+<link rel="stylesheet" href="css/style-ar.css">
+
+<style>
+*{
+    box-sizing:border-box;
+    margin:0;
+    padding:0;
+}
+
+body{
+    background:#f5f6fa;
+    font-family:'Tajawal', sans-serif;
+    overflow-x:hidden;
+}
+
+.page-wrapper{
+    max-width:1100px;
+    margin:auto;
+    padding:20px;
+}
+
+.summary-card{
+    background:#ffffff;
+    border-radius:16px;
+    padding:30px;
+    box-shadow:0 15px 40px rgba(0,0,0,0.07);
+    width:100%;
+}
+
+.summary-content{
+    font-size:18px;
+    line-height:2;
+    color:#333;
+    direction: <?= $direction ?>;
+    text-align: <?= $textAlign ?>;
+    overflow-x:auto;
+}
+
+.summary-content img{
+    max-width:100%;
+}
+
+.actions{
+    margin-top:30px;
+    display:flex;
+    flex-wrap:wrap;
+    gap:12px;
+}
+
+.actions a{
+    padding:10px 18px;
+    border-radius:8px;
+    background:#6a1b9a;
+    color:#fff;
+    text-decoration:none;
+    font-size:14px;
+}
+
+.actions a:hover{
+    opacity:0.9;
+}
+
+@media(max-width:768px){
+    .summary-card{
+        padding:18px;
+    }
+
+    .summary-content{
+        font-size:16px;
+    }
+}
+</style>
+</head>
+<body>
+
+<?php include 'components/user_header.php'; ?>
+
+<div class="page-wrapper">
+
+    <h1 style="margin-bottom:20px;">تلخيص الملف</h1>
+
+    <div class="summary-card">
+
+        <h2 style="margin-bottom:20px;">
+            <?= htmlspecialchars($file['file_name']); ?>
+        </h2>
+
+        <div class="summary-content">
+            <?= $ai_output ?>
+        </div>
+
+        <div class="actions">
+            <a href="upload.php">رجوع</a>
+            <a href="<?= $file['file_path']; ?>" target="_blank">قراءة</a>
+            <a href="?file_id=<?= $file_id; ?>&download_summary=1">تحميل PDF</a>
+            <a href="questions.php?file_id=<?= $file_id; ?>">الأسئلة</a>
+        </div>
+
+    </div>
+
+</div>
+
+<script src="js/script.js"></script>
+<script src="js/switcher.js"></script>
+
+</body>
+</html>
+
+
+<div class="summary-actions">
+                <a href="upload.php" class="inline-btn">رجوع</a>
+                <a href="<?= $file['file_path']; ?>" target="_blank" class="inline-btn">قراءة</a>
+                <a href="?file_id=<?= $file_id; ?>&download_summary=1" class="inline-option-btn">تحميل</a>
+                <a href="questions.php?file_id=<?= $file_id; ?>" class="inline-btn">الأسئلة</a>
+            </div>
